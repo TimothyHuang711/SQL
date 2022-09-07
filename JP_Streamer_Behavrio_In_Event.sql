@@ -1,0 +1,1284 @@
+-- Received Points, MAS and monthly givers
+-- WITH
+--   MonthlySpenders AS (
+--     SELECT 
+--       tzMonth ,
+--       SUM(numUniSender) AS spenders
+--     FROM `media17-1119.MatomoDataSourceForKPI.Sender_ViewRegion_Monthly`
+--     WHERE tzDate BETWEEN '2021-01-01'AND '2022-07-31'
+--       AND withExpiredOrNot = 'Without Expired'
+--       AND pointType IN ('Not Free Point')
+--       AND operationRegionGroup IN ('Japan')
+--       AND allSpenderOrNot = 'Spender'
+--     GROUP BY tzMonth
+--   ),
+--   MAS AS (
+--     SELECT
+--       monthly AS tzMonth,
+--       SUM(DAS) AS streamers
+--     FROM `media17-1119.MatomoDataSourceForKPI.DAS_Monthly`
+--     WHERE tzDate BETWEEN '2021-01-01'AND '2022-07-31'
+--       AND operationRegionGroup IN ('Japan')
+--     GROUP BY tzMonth
+--   ),
+--   MonthlyReceivedPoints AS (
+--     SELECT
+--       tzMonth,
+--       SUM(monthlySendPoints) AS receivedPoints,
+--     FROM `media17-1119.MatomoDataSourceForKPI.CoinRevenue_Receiver_Points_Monthly`
+--     WHERE tzDate BETWEEN '2021-01-01'AND '2022-07-31'
+--       AND operationRegionGroup IN ('Japan')
+--       AND coinType IN ('Paid')
+--     GROUP BY tzMonth
+--   ),
+--   MonthlyReceivedCash AS (
+--     SELECT
+--       tzMonth,
+--       SUM(monthlySendPrice) AS receivedCash
+--     FROM `media17-1119.MatomoDataSourceForKPI.CoinRevenue_Receiver_Cash_Monthly`
+--     WHERE tzDate BETWEEN '2021-01-01'AND '2022-07-31'
+--       AND operationRegionGroup IN ('Japan')
+--       AND coinType IN ('Paid')
+--     GROUP BY tzMonth
+--   )
+-- SELECT
+--   SP.tzMonth,
+--   C.receivedCash,
+--   P.receivedPoints,
+--   C.receivedCash / P.receivedPoints AS pointExchangeRate,
+--   S.streamers,
+--   SP.spenders
+-- FROM MonthlySpenders AS SP
+-- INNER JOIN MAS AS S
+--   USING(tzMonth)
+-- INNER JOIN MonthlyReceivedPoints AS P
+--   USING(tzMonth)
+-- LEFT JOIN MonthlyReceivedCash AS C
+--   USING(tzMonth)
+-- ORDER BY tzMonth
+
+-- Spender and spent ARPPU for JP streamers
+-- SELECT tzDate,
+--   SUM(`spentUsers`) AS `Spenders`,
+--   SAFE_DIVIDE(SUM(spentPrice), SUM(spentUsers)) AS `Spent_ARPPU`,
+--   SAFE_DIVIDE(SUM(spentPoints), SUM(spentUsers)) AS `Spent_ARPPU_points`
+-- FROM `media17-1119.MatomoDataSourceForKPI.SpentARPPU_ViewRegion_Monthly`
+-- WHERE `tzDate` BETWEEN "2021-01-01" AND "2022-07-31"
+--   AND `operationRegionGroup` IN ('Japan')
+--   AND `withExpiredOrNot` = 'Without Expired'
+-- GROUP BY tzDate
+-- ORDER BY tzDate;
+
+-- Spent point/revenue threshold and spenders for JP streamers
+-- WITH 
+--   SpendInfo AS(
+--     SELECT
+--       DATE_TRUNC(DATE(
+--         PUI.timestamp_utc,
+--         PUI.receiver_inferStreamerTimezone
+--       ), MONTH) AS tzMonth,
+--       PUI.user_id AS userID,
+--       SUM(PUI.listPurchaseIncome) AS spentRevenue,
+--       SUM(PUI.send_point) AS spentPoint
+--     FROM
+--       `media17-1119.MatomoCore.fact_usage` PUI
+--     WHERE
+--       DATE(
+--         PUI.timestamp_utc,
+--         PUI.receiver_inferStreamerTimezone
+--       ) <= CURRENT_DATE(PUI.receiver_inferStreamerTimezone)
+--       AND PUI.listPurchaseIncome > 0
+--       AND PUI.giftID NOT IN (
+--         'expiredPaidGiftID',
+--         'expiredFreeGiftID',
+--         'system_recycle',
+--         'system_cancel_order',
+--         'system_no_reason_recycle'
+--       )
+--       -- Receive Revenue Remove GamePool lose(user win) usage and GamePool bet usage
+--       AND NOT (
+--       PUI.user_id IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
+--       AND PUI.giftID IN (
+--           'fruit_farm_gpool_lose_points'
+--       )
+--       )
+--       AND NOT (
+--       PUI.receive_user_id IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
+--       AND PUI.giftID IN (
+--           'fruit_farm_user_bet_points'
+--       )
+--       )
+--       AND PUI.receiver_inferStreamerRegionGroup = "Japan"
+--       AND DATE(PUI.timestamp_utc, PUI.receiver_inferStreamerTimezone) BETWEEN
+--         "2021-01-01" AND "2022-07-31"
+--     GROUP BY
+--       tzMonth,
+--       userID
+--   ),
+--   SpendPercentile AS (
+--     SELECT
+--       tzMonth,
+--       userID,
+--       spentRevenue,
+--       spentPoint,
+--       PERCENTILE_CONT(spentPoint, 0.99) OVER (PARTITION BY tzMonth) AS points_P99,
+--       PERCENTILE_CONT(spentPoint, 0.95) OVER (PARTITION BY tzMonth) AS points_P95,
+--       PERCENTILE_CONT(spentPoint, 0.9) OVER (PARTITION BY tzMonth) AS points_P90,
+--       PERCENTILE_CONT(spentPoint, 0.5) OVER (PARTITION BY tzMonth) AS points_P50,
+--       PERCENTILE_CONT(spentRevenue, 0.99) OVER (PARTITION BY tzMonth) AS revenue_P99,
+--       PERCENTILE_CONT(spentRevenue, 0.95) OVER (PARTITION BY tzMonth) AS revenue_P95,
+--       PERCENTILE_CONT(spentRevenue, 0.9) OVER (PARTITION BY tzMonth) AS revenue_P90,
+--       PERCENTILE_CONT(spentRevenue, 0.5) OVER (PARTITION BY tzMonth) AS revenue_P50
+--     FROM
+--       SpendInfo
+--   )
+-- SELECT
+--   tzMonth,
+--   ANY_VALUE(points_P99) AS points_P99,
+--   ANY_VALUE(points_P95) AS points_P95,
+--   ANY_VALUE(points_P90) AS points_P90,
+--   ANY_VALUE(points_P50) AS points_P50,
+--   ANY_VALUE(revenue_P99) AS revenue_P99,
+--   ANY_VALUE(revenue_P95) AS revenue_P95,
+--   ANY_VALUE(revenue_P90) AS revenue_P90,
+--   ANY_VALUE(revenue_P50) AS revenue_P50,
+--   COUNTIF(spentPoint >= points_P99) AS pointSpender_P99,
+--   COUNTIF(spentPoint >= points_P95) AS pointSpender_P95,
+--   COUNTIF(spentPoint >= points_P90) AS pointSpender_P90,
+--   COUNTIF(spentPoint >= points_P50) AS pointSpender_P50,
+--   -- COUNTIF(spentRevenue >= revenue_P99) AS revenueSpender_P99,
+--   -- COUNTIF(spentRevenue >= revenue_P95) AS revenueSpender_P95,
+--   -- COUNTIF(spentRevenue >= revenue_P90) AS revenueSpender_P90,
+--   -- COUNTIF(spentRevenue >= revenue_P50) AS revenueSpender_P50,
+-- FROM SpendPercentile
+-- GROUP BY tzMonth
+-- ORDER BY tzMonth
+
+-- Gross revenue and event contribution
+-- WITH
+--   RevenueComp AS (
+--     SELECT DATE_TRUNC(`tzDate`, MONTH) AS month,
+--       CASE
+--         WHEN eventType = "Event" AND revenueCategory = "GIFT" THEN "EventGift"
+--         WHEN eventType = "Not Event" AND revenueCategory = "GIFT" THEN "NonEventGift"
+--         ELSE revenueCategory
+--       END AS `group`,
+--       SUM(dailySendPrice) AS revenue,
+--       SUM(dailySendPoints) AS points
+--     FROM `media17-1119.MatomoDataSourceForKPI.CoinRevenue_Receiver_Cash_Daily`
+--     WHERE tzDate BETWEEN '2021-01-01' AND '2022-07-31'
+--       AND `operationRegionGroup` IN ('Japan')
+--     GROUP BY month, `group`
+--   )
+-- SELECT
+--   month,
+--   points_EventGift,
+--   points_NonEventGift,
+--   points_ARMY,
+--   points_GUARDIAN,
+--   points_OTHERS,
+--   revenue_EventGift,
+--   revenue_NonEventGift,
+--   revenue_ARMY,
+--   revenue_GUARDIAN,
+--   revenue_OTHERS
+-- FROM RevenueComp
+-- PIVOT (
+--   SUM(revenue) AS revenue, SUM(points) AS points
+--   FOR `group` IN ("EventGift", "NonEventGift", "ARMY", "GUARDIAN", "OTHERS")
+-- )
+-- ORDER BY month
+
+-- Monthly evnet counts, revenue from JP dept. and revenue from other dept.
+-- WITH 
+--   JPDept AS (
+--     SELECT DISTINCT
+--       FORMAT_DATE("%Y-%m", DATE(TIMESTAMP(tzDate), "Asia/Tokyo")) AS month
+--       ,COUNT(DISTINCT eventID) AS counts
+--       ,SUM(pointUsageIncome) AS revenue_jp
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND isEventGift = TRUE
+--     GROUP BY month
+--   )
+--   ,AllDept AS (
+--     SELECT DISTINCT
+--       FORMAT_DATE("%Y-%m", DATE(TIMESTAMP(tzDate), "Asia/Tokyo")) AS month
+--       ,SUM(pointUsageIncome) AS revenue_all
+--     FROM `media17-1119.MatomoDataSource.EventAnalysis` 
+--     WHERE receiverInfo.streamInferRegionGroup = "Japan"
+--       AND isEventGift = TRUE
+--     GROUP BY month
+--   )
+-- SELECT 
+--   JP.month
+--   ,JP.counts
+--   ,JP.revenue_jp
+--   ,A.revenue_all
+--   ,A.revenue_all - JP.revenue_jp AS revenue_other
+-- FROM JPDept AS JP
+-- INNER JOIN AllDept AS A
+--   USING(month)
+-- ORDER BY month
+
+-- Number of event for day of month
+-- WITH
+--   JPEvent AS (
+--     SELECT DISTINCT
+--       eventID
+--       ,eventName
+--       ,IF(
+--         DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") < "2021-01-01",
+--         "2021-01-01",
+--         DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo")
+--       ) AS startDate
+--       ,IF(
+--         DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo") > "2022-07-31",
+--         "2022-07-31",
+--         DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo")
+--       ) AS endDate
+--     FROM 
+--       `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE 
+--       department = "JP-Event"
+--       AND DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo") > "2021-01-01T00:00:00"
+--       AND DATETIME(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") < "2022-08-01T00:00:00"
+--     ORDER BY 
+--       startDate
+--   )
+--   ,DateRange AS (
+--     SELECT 
+--       dates
+--     FROM 
+--       UNNEST(GENERATE_DATE_ARRAY(
+--         (SELECT MIN(startDate) FROM JPEvent), 
+--         (SELECT MAX(endDate) FROM JPEvent), 
+--         INTERVAL 1 DAY
+--       )) AS dates
+--   )
+-- SELECT
+--   CASE
+--     WHEN EXTRACT(YEAR FROM D.dates) = 2021 AND EXTRACT(MONTH FROM D.dates) <= 6 THEN "2021H1"
+--     WHEN EXTRACT(YEAR FROM D.dates) = 2021 AND EXTRACT(MONTH FROM D.dates) >= 7 THEN "2021H2"
+--     WHEN EXTRACT(YEAR FROM D.dates) = 2022 AND EXTRACT(MONTH FROM D.dates) <= 6 THEN "2022H1"
+--     WHEN EXTRACT(YEAR FROM D.dates) = 2022 AND EXTRACT(MONTH FROM D.dates) >= 7 THEN "2022H2"
+--   END AS halfYear
+--   -- DATE_TRUNC(D.dates, QUARTER) AS quarter
+--   ,EXTRACT(DAY FROM D.dates) AS dayOfMonth
+--   ,COUNT(DISTINCT E.eventID)/COUNT(DISTINCT DATE_TRUNC(D.dates, MONTH)) AS eventCnt
+-- FROM 
+--   JPEvent AS E
+-- CROSS JOIN 
+--   DateRange AS D
+-- WHERE 
+--   E.startDate <=D.dates
+--   AND E.endDate >= D.dates
+-- GROUP BY 
+--   halfYear
+--   ,dayOfMonth
+-- ORDER BY 
+--   halfYear
+--   ,dayOfMonth
+
+-- Evnet start date for day of month
+-- SELECT 
+--   DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), YEAR) AS year
+--   ,EXTRACT(DAY FROM DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo")) AS startDate
+--   ,(
+--     COUNT(DISTINCT eventID)/ 
+--     COUNT(DISTINCT DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH))
+--   ) AS cnt
+-- FROM
+--   `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+-- WHERE 
+--   department = "JP-Event"
+--   AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+-- GROUP BY 
+--   year
+--   ,startDate
+-- ORDER BY 
+--   year
+--   ,startDate
+
+-- Evnet end date for day of month
+-- SELECT 
+--   DATE_TRUNC(DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR), YEAR) AS year
+--   ,EXTRACT(DAY FROM DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR)) AS endDate
+--   ,(
+--     COUNT(DISTINCT eventID)/ 
+--     COUNT(DISTINCT DATE_TRUNC(DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR), MONTH))
+--   ) AS cnt
+-- FROM
+--   `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+-- WHERE 
+--   department = "JP-Event"
+--   AND DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR) BETWEEN "2021-01-01" AND "2022-08-01"
+-- GROUP BY 
+--   year
+--   ,endDate
+-- ORDER BY 
+--   year
+--   ,endDate
+
+-- Evnet start date for day of week
+-- SELECT 
+--   DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), YEAR) AS year
+--   ,EXTRACT(DAYOFWEEK FROM DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo")) AS startDate
+--   ,(
+--     COUNT(DISTINCT eventID)/ 
+--     COUNT(DISTINCT DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH))
+--   ) AS cnt
+-- FROM
+--   `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+-- WHERE 
+--   department = "JP-Event"
+--   AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+-- GROUP BY 
+--   year
+--   ,startDate
+-- ORDER BY 
+--   year
+--   ,startDate
+
+-- Evnet end date for day of week - 1 hour before actual end time
+-- SELECT 
+--   EXTRACT(YEAR FROM DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo")) AS year
+--   -- DATE_TRUNC(DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR), MONTH) AS month
+--   ,EXTRACT(
+--     DAYOFWEEK FROM 
+--     DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR)
+--   ) AS endDate
+--   ,(
+--     COUNT(DISTINCT eventID)/ 
+--     COUNT(DISTINCT DATE_TRUNC(DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), MONTH))
+--   ) AS cnt
+-- FROM
+--   `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+-- WHERE 
+--   department = "JP-Event"
+--   AND DATETIME_SUB(DATETIME(TIMESTAMP(endUTCDatetime), "Asia/Tokyo"), INTERVAL 1 HOUR) BETWEEN "2021-01-01" AND "2022-08-01"
+-- GROUP BY 
+--   year
+--   ,endDate
+-- ORDER BY 
+--   year
+--   ,endDate
+
+-- Event duration
+-- SELECT DISTINCT
+--   DATE_TRUNC(startDate, MONTH) AS month
+--   ,PERCENTILE_CONT(DATE_DIFF(endDate, startDate, DAY), 0) OVER (PARTITION BY DATE_TRUNC(startDate, MONTH)) AS `min`
+--   ,PERCENTILE_CONT(DATE_DIFF(endDate, startDate, DAY), 0.25) OVER (PARTITION BY DATE_TRUNC(startDate, MONTH)) AS `Q1`
+--   ,PERCENTILE_CONT(DATE_DIFF(endDate, startDate, DAY), 0.5) OVER (PARTITION BY DATE_TRUNC(startDate, MONTH)) AS `Q2`
+--   ,PERCENTILE_CONT(DATE_DIFF(endDate, startDate, DAY), 0.75) OVER (PARTITION BY DATE_TRUNC(startDate, MONTH)) AS `Q3`
+--   ,PERCENTILE_CONT(DATE_DIFF(endDate, startDate, DAY), 1) OVER (PARTITION BY DATE_TRUNC(startDate, MONTH)) AS `max`
+-- FROM (
+--   SELECT DISTINCT
+--     eventID
+--     ,DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") AS startDate
+--     ,DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo") AS endDate
+--   FROM
+--     `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--   WHERE 
+--     department = "JP-Event"
+--     AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+-- ) AS T
+-- ORDER BY
+--   month
+
+-- Streamer's degree of participation in events
+-- WITH
+--   EventParticipant AS (
+--     SELECT
+--       DATE_TRUNC(tzDate, MONTH) AS month
+--       ,COUNT(DISTINCT receiverInfo.userID) AS MAS_event
+--       ,COUNT(DISTINCT senderInfo.userID) AS MAU_event
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND tzDate BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month
+--   )
+--   ,MAS AS (
+--     SELECT
+--       tzDate AS month
+--       ,SUM(DAS) AS MAS
+--     FROM `media17-1119.MatomoDataSourceForKPI.DAS_Monthly`
+--     WHERE operationRegionGroup = "Japan"
+--     GROUP BY month
+--   )
+--   ,MAU AS (
+--     SELECT
+--       tzDate AS month
+--       ,SUM(MAU) AS MAU
+--     FROM `media17-1119.MatomoDataSourceForKPI.DAU_Monthly`
+--     WHERE operationRegionGroup = "Japan"
+--     GROUP BY month
+--   )
+-- SELECT
+--   EP.month
+--   ,EP.MAS_event
+--   ,MAS.MAS
+--   ,EP.MAS_event/ MAS.MAS AS degreeOfPart_S
+--   ,EP.MAU_event
+--   ,MAU.MAU
+--   ,EP.MAU_event / MAU.MAU AS degreeOfPart_U
+-- FROM EventParticipant AS EP
+-- LEFT JOIN MAS
+--   USING(month)
+-- LEFT JOIN MAU
+--   USING(month)
+-- ORDER BY month
+
+-- Median and average number of events attended and points received
+-- WITH
+--   AttendedEvent AS(
+--     SELECT
+--       DATE_TRUNC(tzDate, MONTH) AS month
+--       ,receiverInfo.userID
+--       ,COUNT(DISTINCT eventID) AS eventCnt
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND tzDate BETWEEN "2021-01-01" AND "2022-07-31"
+--       AND receivePoint > 0
+--     GROUP BY month, userID
+--   )
+--   ,Quartile AS (
+--     SELECT DISTINCT
+--       month
+--       ,PERCENTILE_CONT(eventCnt, 0.5) OVER (PARTITION BY month) AS `eventCnt_Q2`
+--       ,PERCENTILE_CONT(receivePoint, 0.5) OVER (PARTITION BY month) AS `receivePoint_Q2`
+--       ,PERCENTILE_CONT(eventCnt, 0.9) OVER (PARTITION BY month) AS `eventCnt_D9`
+--       ,PERCENTILE_CONT(receivePoint, 0.9) OVER (PARTITION BY month) AS `receivePoint_D9`
+--     FROM AttendedEvent
+--   )
+-- SELECT
+--   Q.*
+--   ,T.* EXCEPT(month)
+-- FROM Quartile AS Q
+-- LEFT JOIN (
+--   SELECT
+--     month
+--     ,AVG(eventCnt) AS eventCnt_avg
+--     ,AVG(receivePoint) AS receivePoint_avg
+--   FROM AttendedEvent
+--   GROUP BY month
+-- ) AS T
+-- USING(month)
+-- ORDER BY month
+
+-- Streamer focused events
+-- WITH
+--   StreamerWithEvent2 AS (
+--     SELECT DISTINCT
+--       DATE(timestamp, "Asia/Tokyo") AS tzDate
+--       ,LS.streamerID
+--       ,LS.giftEventID
+--     FROM `media17-1119.BackendEvent.LiveStreamEventInfo` AS LS
+--     WHERE DATE(timestamp, "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--   )
+--   ,EventParticipant AS (
+--     SELECT DISTINCT
+--       DATE_TRUNC(tzDate, MONTH) AS month
+--       ,receiverInfo.userID
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND tzDate BETWEEN "2021-01-01" AND "2022-07-31"
+--   )
+--   ,FocusEventCount AS (
+--     SELECT
+--       DATE_TRUNC(SWE.tzDate, MONTH) AS month
+--       ,SWE.streamerID
+--       ,COUNT(DISTINCT SWE.giftEventID) AS eventCnt
+--     FROM StreamerWithEvent2 AS SWE
+--     INNER JOIN EventParticipant AS EP
+--       ON DATE_TRUNC(SWE.tzDate, MONTH) = EP.month
+--       AND SWE.streamerID = EP.userID
+--     GROUP BY month, streamerID
+--   )
+--   ,FocusEventPercentile AS (
+--     SELECT DISTINCT
+--       month
+--       ,PERCENTILE_CONT(eventCnt, 0.5) OVER (PARTITION BY month) AS eventCnt_P50
+--       ,PERCENTILE_CONT(eventCnt, 0.75) OVER (PARTITION BY month) AS eventCnt_P75
+--       ,PERCENTILE_CONT(eventCnt, 0.9) OVER (PARTITION BY month) AS eventCnt_P90
+--     FROM FocusEventCount
+--   )
+-- SELECT
+--   month
+--   ,COUNT(DISTINCT streamerID) AS streamerCnt
+--   ,AVG(eventCnt) AS eventCnt_avg
+--   ,ANY_VALUE(eventCnt_P50) AS eventCnt_P50
+--   ,ANY_VALUE(eventCnt_P75) AS eventCnt_P75
+--   ,ANY_VALUE(eventCnt_P90) AS eventCnt_P90
+-- FROM FocusEventCount
+-- INNER JOIN FocusEventPercentile
+--   USING(month)
+-- GROUP BY month
+
+-- The number of focused events of monthly top10 streamers
+-- WITH
+--   StreamerWithEvent AS (
+--     SELECT DISTINCT
+--       DATE(timestamp, "Asia/Tokyo") AS tzDate
+--       ,LS.streamerID
+--       ,LS.giftEventID
+--     FROM `media17-1119.BackendEvent.LiveStreamEventInfo` AS LS
+--     WHERE DATE(timestamp, "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--   )
+--   ,MonthlyStreamerPoints AS (
+--     SELECT DISTINCT
+--       DATE_TRUNC(tzDate, MONTH) AS month
+--       ,receiverInfo.userID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND tzDate BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, userID
+--   )
+--   ,MonthlyStreamerRank AS (
+--     SELECT
+--       month
+--       ,userID
+--       ,receivePoint
+--       ,RANK() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS streamer_rank
+--     FROM MonthlyStreamerPoints
+--   )
+--   ,MonthlyTopStreamers AS (
+--     SELECT 
+--       month
+--       ,userID
+--       ,receivePoint
+--       ,streamer_rank
+--     FROM MonthlyStreamerRank
+--     WHERE streamer_rank <= 10
+--   )
+--   ,TopRevenueContribution AS (
+--     SELECT
+--       month
+--       ,top.receivePoint / total.receivePoint AS contribution
+--     FROM (
+--       SELECT
+--         month
+--         ,SUM(receivePoint) AS receivePoint
+--       FROM MonthlyTopStreamers 
+--       GROUP BY month
+--     )AS top
+--     INNER JOIN (
+--       SELECT
+--         month
+--         ,SUM(receivePoint) AS receivePoint
+--       FROM MonthlyStreamerPoints
+--       GROUP BY month
+--     )AS total
+--       USING(month)
+--   )
+--   ,FocusEventCount AS (
+--     SELECT
+--       DATE_TRUNC(SWE.tzDate, MONTH) AS month
+--       ,SWE.streamerID
+--       ,COUNT(DISTINCT SWE.giftEventID) AS eventCnt
+--     FROM StreamerWithEvent AS SWE
+--     INNER JOIN MonthlyTopStreamers AS MTS
+--       ON DATE_TRUNC(SWE.tzDate, MONTH) = MTS.month
+--       AND SWE.streamerID = MTS.userID
+--     GROUP BY month, streamerID
+--   )
+--   ,FocusEventPercentile AS (
+--     SELECT DISTINCT
+--       month
+--       ,PERCENTILE_CONT(eventCnt, 0.5) OVER (PARTITION BY month) AS eventCnt_P50
+--       ,PERCENTILE_CONT(eventCnt, 0.75) OVER (PARTITION BY month) AS eventCnt_P75
+--       ,PERCENTILE_CONT(eventCnt, 0.9) OVER (PARTITION BY month) AS eventCnt_P90
+--     FROM FocusEventCount
+--   )
+-- SELECT
+--   month
+--   ,AVG(FEC.eventCnt) AS eventCnt_avg
+--   ,ANY_VALUE(FEP.eventCnt_P50) AS eventCnt_P50
+--   ,AVG(C.contribution) AS contribution
+--   ,SUM(S.receivePoint) AS receivePoint
+-- FROM FocusEventCount AS FEC
+-- INNER JOIN FocusEventPercentile AS FEP
+--   USING(month)
+-- INNER JOIN TopRevenueContribution AS C
+--   USING(month)
+-- INNER JOIN MonthlyTopStreamers AS S
+--   USING(month)
+-- GROUP BY month
+-- ORDER BY month
+
+-- Revenue concentration of top10 streamers in every event
+-- WITH
+--   StreamerPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,eventName
+--       ,receiverInfo.userID
+--       ,receiverInfo.openID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID, eventName, userID, openID
+--   )
+--   ,StreamerRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,userID
+--       ,RANK() OVER (
+--         PARTITION BY month, eventID
+--         ORDER BY receivePoint DESC
+--       ) AS streamer_rank
+--     FROM StreamerPoints
+--   )
+-- SELECT
+--   P.month
+--   ,SUM(IF(R.streamer_rank <= 1, P.receivePoint, NULL)) / SUM(receivePoint) AS Top1
+--   ,SUM(IF(R.streamer_rank <= 5, P.receivePoint, NULL)) / SUM(receivePoint) AS Top5
+--   ,SUM(IF(R.streamer_rank <= 10, P.receivePoint, NULL)) / SUM(receivePoint) AS Top10
+--   ,SUM(IF(R.streamer_rank <= 20, P.receivePoint, NULL)) / SUM(receivePoint) AS Top20
+--   ,SUM(IF(R.streamer_rank <= 50, P.receivePoint, NULL)) / SUM(receivePoint) AS Top50
+--   ,SUM(IF(R.streamer_rank <= 100, P.receivePoint, NULL)) / SUM(receivePoint) AS Top100
+--   ,SUM(IF(R.streamer_rank <= 500, P.receivePoint, NULL)) / SUM(receivePoint) AS Top500
+--   ,SUM(IF(R.streamer_rank <= 1000, P.receivePoint, NULL)) / SUM(receivePoint) AS Top1000
+--   ,SUM(IF(R.streamer_rank <= 5000, P.receivePoint, NULL)) / SUM(receivePoint) AS Top5000
+-- FROM StreamerPoints AS P
+-- LEFT JOIN StreamerRank AS R
+--   USING(month, eventID, userID)
+-- GROUP BY month
+-- ORDER BY month
+
+-- Revenue concentration of top10 streamers in monthly top5 events
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,eventName
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID, eventName
+--   )
+--   ,EventRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,ROW_NUMBER() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS rowNum
+--     FROM EventPoints
+--   )
+--   ,Top5Events AS (
+--     SELECT eventID
+--     FROM EventRank
+--     WHERE rowNum <= 5
+--   )
+--   ,StreamerPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,eventName
+--       ,receiverInfo.userID
+--       ,receiverInfo.openID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--       AND eventID IN (SELECT eventID FROM Top5Events)
+--     GROUP BY month, eventID, eventName, userID, openID
+--   )
+--   ,StreamerRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,userID
+--       ,RANK() OVER (
+--         PARTITION BY month, eventID
+--         ORDER BY receivePoint DESC
+--       ) AS streamer_rank
+--     FROM StreamerPoints
+--   )
+-- SELECT
+--   P.month
+--   -- ,SUM(IF(R.streamer_rank <= 1, P.receivePoint, NULL)) / SUM(receivePoint) AS Top1
+--   -- ,SUM(IF(R.streamer_rank <= 5, P.receivePoint, NULL)) / SUM(receivePoint) AS Top5
+--   -- ,SUM(IF(R.streamer_rank <= 10, P.receivePoint, NULL)) / SUM(receivePoint) AS Top10
+--   -- ,SUM(IF(R.streamer_rank <= 20, P.receivePoint, NULL)) / SUM(receivePoint) AS Top20
+--   -- ,SUM(IF(R.streamer_rank <= 50, P.receivePoint, NULL)) / SUM(receivePoint) AS Top50
+--   -- ,SUM(IF(R.streamer_rank <= 100, P.receivePoint, NULL)) / SUM(receivePoint) AS Top100
+--   -- ,SUM(IF(R.streamer_rank <= 500, P.receivePoint, NULL)) / SUM(receivePoint) AS Top500
+--   -- ,SUM(IF(R.streamer_rank <= 1000, P.receivePoint, NULL)) / SUM(receivePoint) AS Top1000
+--   -- ,SUM(IF(R.streamer_rank <= 5000, P.receivePoint, NULL)) / SUM(receivePoint) AS Top5000
+--   ,SUM(IF(R.streamer_rank <= 5, P.receivePoint, NULL)) AS top5
+--   ,SUM(IF(R.streamer_rank <= 10, P.receivePoint, NULL)) AS top10
+-- FROM StreamerPoints AS P
+-- LEFT JOIN StreamerRank AS R
+--   USING(month, eventID, userID)
+-- GROUP BY month
+-- ORDER BY month
+
+-- Top 1 events info
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,eventName
+--       ,SUM(receivePoint) AS receivePoint
+--       ,COUNT(DISTINCT receiverInfo.userID) AS numReceiver
+--       ,COUNT(DISTINCT senderInfo.userID) AS numSender
+--       ,SUM(pointUsageIncome) AS receiveRevenue
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID, eventName
+--   )
+--   ,EventRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,eventName
+--       ,receivePoint
+--       ,receiveRevenue
+--       ,numReceiver
+--       ,numSender
+--       ,ROW_NUMBER() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS rowNum
+--     FROM EventPoints
+--   )
+--   ,TopEvents AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,eventName
+--       ,receivePoint
+--       ,receiveRevenue
+--       ,numReceiver
+--       ,numSender
+--       ,rowNum AS event_rank
+--     FROM EventRank
+--     WHERE rowNum <= 1
+--   )
+-- SELECT *
+-- FROM TopEvents
+-- ORDER BY month
+
+-- Streamer rank in monthly Top1 event
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,eventName
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID, eventName
+--   )
+--   ,EventRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,eventName
+--       ,ROW_NUMBER() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS rowNum
+--     FROM EventPoints
+--   )
+--   ,TopEvents AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,eventName
+--       ,rowNum AS event_rank
+--     FROM EventRank
+--     WHERE rowNum <= 1
+--   )
+--   ,StreamerPointsDaily AS (
+--     SELECT
+--       eventID
+--       ,eventName
+--       ,TE.month
+--       ,receiverInfo.userID
+--       ,receiverInfo.openID
+--       ,tzDate
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     INNER JOIN TopEvents AS TE
+--       USING(eventID, eventName)
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND tzDate BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY 
+--       eventID
+--       ,eventName
+--       ,TE.month
+--       ,receiverInfo.userID
+--       ,receiverInfo.openID
+--       ,tzDate
+--   )
+-- SELECT
+--   *
+--   ,RANK() OVER (
+--     PARTITION BY eventID ,eventName ,month ,tzDate
+--     ORDER BY receivePoint DESC
+--   ) AS dailyRank
+-- FROM StreamerPointsDaily
+
+-- Monthly top events contribution
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID
+--   )
+--   ,EventRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,receivePoint
+--       ,ROW_NUMBER() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS rowNum
+--     FROM EventPoints
+--   )
+--   ,TopEvents AS (
+--     SELECT month, SUM(receivePoint) AS topReceivePoint
+--     FROM EventRank
+--     WHERE rowNum <= 5
+--     GROUP BY month
+--   )
+-- SELECT
+--   month,
+--   topReceivePoint / totalReceivePoint AS ratio 
+-- FROM (
+--   SELECT month, SUM(receivePoint) AS totalReceivePoint
+--   FROM EventRank
+--   GROUP BY month
+-- )
+-- LEFT JOIN TopEvents
+--   USING(month)
+-- ORDER BY month
+
+-- Rank change rate for events in the same month
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID
+--   )
+--   ,EventRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,receivePoint
+--       ,ROW_NUMBER() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS rowNum
+--     FROM EventPoints
+--   )
+--   ,TopEvents AS (
+--     SELECT *
+--     FROM EventRank
+--     -- WHERE rowNum <= 5
+--   )
+--   ,TopEventWithInfo AS (
+--     SELECT DISTINCT
+--       T.eventID
+--       ,DATE(TIMESTAMP(E.startUTCDatetime), "Asia/Tokyo") AS startDate
+--       ,DATE(TIMESTAMP(E.endUTCDatetime), "Asia/Tokyo") AS endDate
+--     FROM TopEvents AS T
+--     INNER JOIN `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` AS E
+--       USING(eventID)
+--   )
+--   ,DateRange AS (
+--     SELECT 
+--       tzDate
+--     FROM 
+--       UNNEST(GENERATE_DATE_ARRAY(
+--         (SELECT MIN(startDate) FROM TopEventWithInfo), 
+--         (SELECT MAX(endDate) FROM TopEventWithInfo), 
+--         INTERVAL 1 DAY
+--       )) AS tzDate
+--   )
+--   ,StreamerPoints AS (
+--     SELECT
+--       eventID
+--       ,eventName
+--       ,DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") AS startDate
+--       ,DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo") AS endDate
+--       ,tzDate
+--       ,receiverInfo.userID
+--       ,receiverInfo.openID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--       AND eventID IN (SELECT eventID FROM TopEvents)
+--     GROUP BY eventID, eventName, startDate, endDate, tzDate, userID, openID
+--   )
+--   ,StreamerFillDate AS (
+--     SELECT D.tzDate, S.eventID, S.userID
+--     FROM (
+--       SELECT DISTINCT eventID, startDate, endDate, userID
+--       FROM StreamerPoints
+--     ) AS S
+--     CROSS JOIN DateRange AS D
+--     WHERE S.startDate <= D.tzDate
+--       AND S.endDate >= D.tzDate
+--   )
+--   ,StreamerDailyPoints AS (
+--     SELECT
+--       D.*,
+--       IFNULL(P.receivePoint, 0) AS receivePoint
+--     FROM StreamerFillDate AS D
+--     LEFT JOIN StreamerPoints AS P
+--       USING(eventID, userID, tzDate)
+--   )
+--   ,StreamerCumPoints AS (
+--     SELECT
+--       tzDate,
+--       eventID,
+--       userID,
+--       SUM(receivePoint) OVER (
+--         PARTITION BY eventID, userID
+--         ORDER BY tzDate 
+--         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+--       ) AS cumReceivePoint
+--     FROM StreamerDailyPoints
+--   )
+--   ,StreamerRank AS (
+--     SELECT
+--       eventID
+--       ,tzDate
+--       ,userID
+--       ,cumReceivePoint
+--       ,RANK() OVER (
+--         PARTITION BY eventID, tzDate
+--         ORDER BY cumReceivePoint DESC, userID
+--       ) AS streamer_rank
+--       -- ,PERCENTILE_CONT(cumReceivePoint, 0.5) OVER (PARTITION BY eventID, tzDate) AS streamer_P50
+--       -- ,PERCENTILE_CONT(cumReceivePoint, 0.9) OVER (PARTITION BY eventID, tzDate) AS streamer_P90
+--       -- ,PERCENTILE_CONT(cumReceivePoint, 0.99) OVER (PARTITION BY eventID, tzDate) AS streamer_P99
+--     FROM StreamerCumPoints
+--   )
+--   ,TopStreamers AS (
+--     SELECT
+--       tzDate
+--       ,eventID
+--       ,userID
+--       ,cumReceivePoint
+--       ,streamer_rank
+--     FROM StreamerRank
+--     WHERE streamer_rank <= 1000
+--     -- WHERE cumReceivePoint <= streamer_P50
+--   )
+--   ,EventCompetition AS (
+--     SELECT
+--       T2.eventID,
+--       COUNTIF(T1.userID != T2.userID) / COUNT(T2.userID) AS changeRate
+--     FROM TopStreamers AS T1
+--     INNER JOIN TopStreamers AS T2
+--       ON T1.eventID = T2.eventID
+--       AND T1.tzDate = DATE_SUB(T2.tzDate, INTERVAL 1 DAY)
+--       AND T1.streamer_rank = T2.streamer_rank
+--     GROUP BY eventID
+--   )
+--   ,RankChangePercentile AS (
+--     SELECT DISTINCT
+--       DATE_TRUNC(I.startDate, MONTH) AS month,
+--       PERCENTILE_CONT(changeRate, 0.5) OVER (PARTITION BY DATE_TRUNC(I.startDate, MONTH)) AS changeRate
+--     FROM EventCompetition AS C
+--     LEFT JOIN TopEventWithInfo AS I
+--       USING(eventID)
+--   ),
+--   TopStreamerPoint AS (
+--     SELECT
+--       DATE_TRUNC(I.startDate, MONTH) AS month,
+--       SUM(cumReceivePoint) AS receivePoint
+--     FROM TopStreamers
+--     INNER JOIN (
+--       SELECT eventID, MAX(tzDate) AS tzDate
+--       FROM TopStreamers
+--       GROUP BY eventID
+--     )
+--       USING(eventID, tzDate)
+--     LEFT JOIN TopEventWithInfo AS I
+--       USING(eventID)
+--     GROUP BY month
+--   ),
+--   TopEventPoints AS (
+--     SELECT
+--       month,
+--       SUM(receivePoint) AS receivePoint
+--     FROM TopEvents
+--     GROUP BY month
+--   ),
+--   TopEventStreamer AS (
+--     SELECT
+--       DATE_TRUNC(startDate, MONTH) AS month,
+--       COUNT(DISTINCT userID) AS streamers
+--     FROM StreamerPoints
+--     GROUP BY month
+--   )
+-- SELECT 
+--   R.month,
+--   R.changeRate,
+--   P.receivePoint AS topReceivePoint,
+--   EP.receivePoint AS totalEventPoint,
+--   P.receivePoint / EP.receivePoint AS topContribution,
+--   S.streamers
+-- FROM RankChangePercentile AS R
+-- INNER JOIN TopStreamerPoint AS P
+--   USING(month)
+-- INNER JOIN TopEventPoints AS EP
+--   USING(month)
+-- INNER JOIN TopEventStreamer AS S
+--   USING(month)
+-- ORDER BY month
+
+-- Linear regression streamer competition to total receive points
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,eventID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month, eventID
+--   )
+--   ,EventRank AS (
+--     SELECT
+--       month
+--       ,eventID
+--       ,receivePoint
+--       ,ROW_NUMBER() OVER (PARTITION BY month ORDER BY receivePoint DESC) AS rowNum
+--     FROM EventPoints
+--   )
+--   ,TopEvents AS (
+--     SELECT eventID
+--     FROM EventRank
+--     WHERE rowNum <= 5
+--   )
+--   ,TopEventWithInfo AS (
+--     SELECT DISTINCT
+--       T.eventID
+--       ,DATE(TIMESTAMP(E.startUTCDatetime), "Asia/Tokyo") AS startDate
+--       ,DATE(TIMESTAMP(E.endUTCDatetime), "Asia/Tokyo") AS endDate
+--     FROM TopEvents AS T
+--     INNER JOIN `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` AS E
+--       USING(eventID)
+--   )
+--   ,DateRange AS (
+--     SELECT 
+--       tzDate
+--     FROM 
+--       UNNEST(GENERATE_DATE_ARRAY(
+--         (SELECT MIN(startDate) FROM TopEventWithInfo), 
+--         (SELECT MAX(endDate) FROM TopEventWithInfo), 
+--         INTERVAL 1 DAY
+--       )) AS tzDate
+--   )
+--   ,StreamerPoints AS (
+--     SELECT
+--       eventID
+--       ,DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") AS startDate
+--       ,DATE(TIMESTAMP(endUTCDatetime), "Asia/Tokyo") AS endDate
+--       ,tzDate
+--       ,receiverInfo.userID
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--       AND eventID IN (SELECT eventID FROM TopEvents)
+--     GROUP BY eventID, startDate, endDate, tzDate, userID
+--   )
+--   ,StreamerFillDate AS (
+--     SELECT D.tzDate, S.eventID, S.userID
+--     FROM (
+--       SELECT DISTINCT eventID, startDate, endDate, userID
+--       FROM StreamerPoints
+--     ) AS S
+--     CROSS JOIN DateRange AS D
+--     WHERE S.startDate <= D.tzDate
+--       AND S.endDate >= D.tzDate
+--   )
+--   ,StreamerDailyPoints AS (
+--     SELECT
+--       D.*,
+--       IFNULL(P.receivePoint, 0) AS receivePoint
+--     FROM StreamerFillDate AS D
+--     LEFT JOIN StreamerPoints AS P
+--       USING(eventID, userID, tzDate)
+--   )
+--   ,StreamerCumPoints AS (
+--     SELECT
+--       tzDate,
+--       eventID,
+--       userID,
+--       SUM(receivePoint) OVER (
+--         PARTITION BY eventID, userID
+--         ORDER BY tzDate 
+--         ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+--       ) AS cumReceivePoint
+--     FROM StreamerDailyPoints
+--   )
+--   ,StreamerRank AS (
+--     SELECT
+--       eventID
+--       ,tzDate
+--       ,userID
+--       ,cumReceivePoint
+--       ,RANK() OVER (
+--         PARTITION BY eventID, tzDate
+--         ORDER BY cumReceivePoint DESC
+--       ) AS streamer_rank
+--     FROM StreamerCumPoints
+--   )
+--   ,TopStreamers AS (
+--     SELECT
+--       tzDate
+--       ,eventID
+--       ,userID
+--       ,cumReceivePoint
+--       ,streamer_rank
+--     FROM StreamerRank
+--     WHERE streamer_rank <= 5
+--   )
+--   ,EventCompetition AS (
+--     SELECT
+--     R2.eventID,
+--     COUNTIF(R1.streamer_rank != R2.streamer_rank)/COUNT(DISTINCT R2.tzDate) AS changes
+--   FROM TopStreamers AS R1
+--   INNER JOIN TopStreamers AS R2
+--     ON R1.eventID = R2.eventID
+--     AND R1.userID = R2.userID
+--     AND R1.tzDate = DATE_SUB(R2.tzDate, INTERVAL 1 DAY)
+--   GROUP BY eventID
+--   )
+--   ,ReceiverSpender AS (
+--     SELECT
+--       eventID,
+--       COUNT(DISTINCT receiverInfo.userID) AS streamers,
+--       COUNT(DISTINCT senderInfo.userID) AS spenders
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--       AND eventID IN (SELECT eventID FROM TopEvents)
+--     GROUP BY eventID
+--   )
+--   ,TopStreamerPoint AS (
+--     SELECT
+--       eventID,
+--       SUM(cumReceivePoint) AS receivePoint
+--     FROM TopStreamers
+--     INNER JOIN (
+--       SELECT eventID, MAX(tzDate) AS tzDate
+--       FROM TopStreamers
+--       GROUP BY eventID
+--     )
+--     USING(eventID, tzDate)
+--     GROUP BY eventID
+--   )
+--   ,EventInSamePeriod AS (
+--     SELECT
+--       T1.eventID,
+--       COUNT(DISTINCT T2.eventID) AS eventCnt
+--     FROM TopEventWithInfo AS T1
+--     LEFT JOIN TopEventWithInfo AS T2
+--       ON T1.startDate <= T2.endDate
+--       AND T1.endDate >= T2.startDate
+--     GROUP BY eventID
+--   )
+-- SELECT 
+--   EC.eventID,
+--   EC.changes,
+--   RS.streamers,
+--   RS.spenders,
+--   DATE_DIFF(TEI.endDate, TEI.startDate, DAY) AS eventDuration,
+--   IF(EXTRACT(DAY FROM TEI.endDate) IN (15, 29, 30, 31), 1, 0) AS popularEndDay,
+--   IF(EXTRACT(YEAR FROM TEI.startDate) = 2022, 1, 0) AS is2022,
+--   EISP.eventCnt,
+--   TSP.receivePoint AS topReceivePoint,
+--   ER.receivePoint AS totalReceivePoint,
+--   TSP.receivePoint / ER.receivePoint AS topContribution
+-- FROM ReceiverSpender AS RS
+-- LEFT JOIN EventCompetition AS EC
+--   USING(eventID)
+-- LEFT JOIN TopStreamerPoint AS TSP
+--   USING(eventID)
+-- LEFT JOIN EventRank AS ER
+--   USING(eventID)
+-- LEFT JOIN TopEventWithInfo AS TEI
+--   USING(eventID)
+-- LEFT JOIN EventInSamePeriod AS EISP
+--   USING(eventID)
+-- ORDER BY eventID
+
+-- The number of top spenders: 3 million points in one event
+-- WITH
+--   EventPoints AS (
+--     SELECT
+--       DATE_TRUNC(DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo"), MONTH) AS month
+--       ,COUNT(DISTINCT senderInfo.userID) AS senders
+--       ,SUM(sendPoint) AS sendPoint
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll` 
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY month
+--   ),
+--   SpenderPoints AS (
+--     SELECT
+--       eventID
+--       ,DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") AS startDate
+--       ,senderInfo.userID
+--       ,SUM(sendPoint) AS sendPoint
+--       ,SUM(receivePoint) AS receivePoint
+--     FROM `media17-1119.MatomoDataSource.EventAnalysisUnnestAll`
+--     WHERE department = "JP-Event"
+--       AND receiverInfo.streamInferRegionGroup = "Japan"
+--       AND DATE(TIMESTAMP(startUTCDatetime), "Asia/Tokyo") BETWEEN "2021-01-01" AND "2022-07-31"
+--     GROUP BY eventID, startDate, userID
+--   )
+-- SELECT 
+--   DATE_TRUNC(startDate, MONTH) AS month,
+--   COUNT(DISTINCT IF(sendPoint < 1000000, userID, NULL)) AS senders_1M_below,
+--   COUNT(DISTINCT IF(sendPoint >= 1000000, userID, NULL)) AS senders_1M,
+--   COUNT(DISTINCT IF(sendPoint >= 3000000, userID, NULL)) AS senders_3M,
+--   COUNT(DISTINCT IF(sendPoint >= 5000000, userID, NULL)) AS senders_5M,
+--   SUM(sendPoint) AS sentPoints,
+--   SUM(receivePoint) AS receivedPoints,
+--   SUM(IF(sendPoint < 1000000, sendPoint, 0)) / SUM(sendPoint) AS contribution_1M_below,
+--   SUM(IF(sendPoint >= 1000000, sendPoint, 0)) / SUM(sendPoint) AS contribution_1M,
+--   SUM(IF(sendPoint >= 3000000, sendPoint, 0)) / SUM(sendPoint) AS contribution_3M,
+--   SUM(IF(sendPoint >= 5000000, sendPoint, 0)) / SUM(sendPoint) AS contribution_5M
+-- FROM SpenderPoints
+-- GROUP BY month
+-- ORDER BY month
