@@ -1,102 +1,43 @@
 -- JP spenders
--- WITH 
---   Contract AS (
---     SELECT
---       CCLWRD.userID,
---       CCLWRD.region,
---       CCLWRD.operationRegionGroup,
---       CCLWRD.timezone,
---       CCLWRD.timeStart,
---       CCLWRD.timeEnd,
---       CCLWRD.isContracted
---     FROM
---       `media17-1119.datamart_view.ContractChangeLogWithRegionDetail` AS CCLWRD
---     WHERE
---       isContracted IS true
---   ),
---   MonthlyWithoutExpired AS(
---     SELECT
---       DATE_TRUNC(
---         DATE(
---           PUI.timestamp_utc,
---           IF(
---             isContracted IS true,
---             Contract.timezone,
---             IF(
---               ReceiverUD.region.registerCountry IS NOT NULL
---               AND ReceiverUD.region.registerCountry != 'Unknown',
---               IFNULL(ReceiverORG.timezone, 'Asia/Taipei'),
---               'Asia/Taipei'
---             )
---           )
---         ),
---         MONTH
---       ) AS month,
---       PUI.user_id AS userID,
---       SUM(PUI.listPurchaseIncome) as spentRevenue
---     FROM
---       `media17-1119.MatomoCore.fact_usage` AS PUI
---     LEFT JOIN `media17-1119.MatomoCore.dim_userdimension` AS ReceiverUD 
---       ON ReceiverUD.userID = PUI.receive_user_id
---     LEFT JOIN `media17-1119.MatomoCore.lookup_region` AS ReceiverORG 
---       ON ReceiverORG.country = ReceiverUD.region.registerCountry
---       AND PUI.timestamp_utc >= ReceiverORG.groupStartTime
---       AND PUI.timestamp_utc < ReceiverORG.groupEndTime
---     LEFT JOIN Contract 
---       ON Contract.userID = PUI.receive_user_id
---       AND PUI.timestamp_utc >= Contract.timeStart
---       AND PUI.timestamp_utc < Contract.timeEnd
---     WHERE
---       DATE(
---         PUI.timestamp_utc,
---         IF(
---           isContracted IS true,
---           Contract.timezone,
---           IF(
---             ReceiverUD.region.registerCountry IS NOT NULL
---             AND ReceiverUD.region.registerCountry != 'Unknown',
---             IFNULL(ReceiverORG.timezone, 'Asia/Taipei'),
---             'Asia/Taipei'
---           )
---         )
---       ) BETWEEN "2015-01-01" AND "2022-08-31"
---       AND PUI.giftID NOT IN (
---         'expiredPaidGiftID',
---         'expiredFreeGiftID',
---         'system_recycle',
---         'system_cancel_order',
---         'system_no_reason_recycle'
---       )
---       -- Revenue Remove GamePool lose(user win) usage and GamePool bet usage
---       AND NOT (
---         PUI.user_id IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
---         AND PUI.giftID IN (
---             'fruit_farm_gpool_lose_points'
---         )
---       )
---       AND NOT (
---         PUI.receive_user_id IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
---         AND PUI.giftID IN (
---             'fruit_farm_user_bet_points'
---         )
---       )
---       AND IF(
---         isContracted IS true,
---         Contract.operationRegionGroup,
---         IF(
---           ReceiverUD.region.registerCountry IS NOT NULL
---           AND ReceiverUD.region.registerCountry != 'Unknown',
---           IFNULL(ReceiverORG.operationRegionGroup, 'RoW'),
---           'Unknown'
---         )
---       ) = "Japan"
---     GROUP BY
---       month,
---       userID
---   )
--- SELECT *
--- FROM MonthlyWithoutExpired
--- ORDER BY month, userID
+WITH
+  MonthlySpentRevenue AS(
+    SELECT
+      DATE_TRUNC(DATE(timestamp_utc, IFNULL(timezone, 'Asia/Taipei')), MONTH) AS month,
+      user_id AS userID,
+      DATE_TRUNC(DATE(registerTime, IFNULL(timezone, "Asia/Taipei")), MONTH) AS registerMonth,
+      SUM(listPurchaseIncome) as spentRevenue
+    FROM
+      `media17-1119.MatomoCore.fact_usage` AS PUI
+    WHERE
+      DATE(timestamp_utc, IFNULL(timezone, 'Asia/Taipei')) BETWEEN "2018-01-01" AND "2022-08-31"
+      AND giftID NOT IN (
+        'expiredPaidGiftID',
+        'expiredFreeGiftID',
+        'system_recycle',
+        'system_cancel_order',
+        'system_no_reason_recycle'
+      )
+      -- Revenue Remove GamePool lose(user win) usage and GamePool bet usage
+      AND NOT (
+        user_id IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
+        AND giftID IN (
+            'fruit_farm_gpool_lose_points'
+        )
+      )
+      AND NOT (
+        receive_user_id IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
+        AND giftID IN (
+            'fruit_farm_user_bet_points'
+        )
+      )
+      AND receiver_inferStreamerRegionGroup = "Japan"
+    GROUP BY
+      month,
+      userID,
+      registerMonth
+  )
+SELECT *
+FROM MonthlyWithoutExpired
 
 -- Current situation of gross revenue and sVIP in 2022
 -- WITH
@@ -208,70 +149,70 @@
 -- ORDER BY month
 
 -- Conversion rate of existing users to sVIP
-WITH
-  Register AS (
-    SELECT 
-      S.month,
-      S.userID,
-      DATE_TRUNC(DATE(UD.profile.registerTime, IFNULL(LR.timezone, "Asia/Taipei")), MONTH) AS registerMonth,
-      spentRevenue
-    FROM `media17-1119.DataLab_Timothy.JPSpenders` AS S
-    LEFT JOIN `MatomoCore.dim_userdimension` AS UD
-      USING(userID)
-    LEFT JOIN `MatomoCore.lookup_region` AS LR
-      ON UD.region.registerCountry = LR.country
-  )
-  ,LeadMonth AS (
-    SELECT
-      userID,
-      MIN(month) AS firstMonth,
-      DATE_DIFF(MIN(month), registerMonth, MONTH) AS monthDiff,
-    FROM Register
-    WHERE spentRevenue >= 1000
-    GROUP BY userID, registerMonth
-  )
-  ,LeadMonthSummary AS (
-    SELECT
-      firstMonth AS month,
-      COUNT(DISTINCT userID) AS existingUsersToTopSpenders,
-      -- AVG(monthDiff) AS leadMonth,
-      COUNT(DISTINCT IF(monthDiff = 1, userID, NULL)) AS M1,
-      COUNT(DISTINCT IF(monthDiff BETWEEN 2 AND 3, userID, NULL)) AS M2ToM3,
-      COUNT(DISTINCT IF(monthDiff BETWEEN 4 AND 6, userID, NULL)) AS M4ToM6,
-      COUNT(DISTINCT IF(monthDiff BETWEEN 7 AND 12, userID, NULL)) AS M7ToM12,
-      COUNT(DISTINCT IF(monthDiff > 12, userID, NULL)) AS M12before,
-    FROM LeadMonth
-    WHERE firstMonth >= "2022-01-01"
-      AND monthDiff > 0
-    GROUP BY month
-  )
-  ,MAUList AS (
-    SELECT DISTINCT
-      DATE_TRUNC(timezoneDate, MONTH) AS month,
-      userID,
-    FROM `MatomoDataMart.DailyUserBehavior_ViewRegion`
-    WHERE operationRegionGroup = 'Japan'
-      AND timezoneDate BETWEEN "2022-01-01" AND "2022-08-31"
-      AND DATE_TRUNC(registerDate, MONTH) < DATE_TRUNC(timezoneDate, MONTH)
-  )
-  ,ExistingNonTopMAU AS (
-    SELECT
-      T1.month,
-      COUNT(DISTINCT T1.userID) AS MAU,
-      COUNT(DISTINCT IF(T2.firstMonth IS NULL OR T2.firstMonth >= T1.month, T1.userID, NULL)) AS existingMAU
-    FROM MAUList AS T1
-    LEFT JOIN LeadMonth AS T2
-      USING(userID)
-    GROUP BY month
-  )
-SELECT
-  T1.*,
-  T2.existingUsersToTopSpenders/T1.existingMAU AS conversionRate,
-  T2.* EXCEPT(month)
-FROM ExistingNonTopMAU AS T1
-LEFT JOIN LeadMonthSummary AS T2
-  USING(month)
-ORDER BY month
+-- WITH
+--   Register AS (
+--     SELECT 
+--       S.month,
+--       S.userID,
+--       DATE_TRUNC(DATE(UD.profile.registerTime, IFNULL(LR.timezone, "Asia/Taipei")), MONTH) AS registerMonth,
+--       spentRevenue
+--     FROM `media17-1119.DataLab_Timothy.JPSpenders` AS S
+--     LEFT JOIN `MatomoCore.dim_userdimension` AS UD
+--       USING(userID)
+--     LEFT JOIN `MatomoCore.lookup_region` AS LR
+--       ON UD.region.registerCountry = LR.country
+--   )
+--   ,LeadMonth AS (
+--     SELECT
+--       userID,
+--       MIN(month) AS firstMonth,
+--       DATE_DIFF(MIN(month), registerMonth, MONTH) AS monthDiff,
+--     FROM Register
+--     WHERE spentRevenue >= 1000
+--     GROUP BY userID, registerMonth
+--   )
+--   ,LeadMonthSummary AS (
+--     SELECT
+--       firstMonth AS month,
+--       COUNT(DISTINCT userID) AS existingUsersToTopSpenders,
+--       -- AVG(monthDiff) AS leadMonth,
+--       COUNT(DISTINCT IF(monthDiff = 1, userID, NULL)) AS M1,
+--       COUNT(DISTINCT IF(monthDiff BETWEEN 2 AND 3, userID, NULL)) AS M2ToM3,
+--       COUNT(DISTINCT IF(monthDiff BETWEEN 4 AND 6, userID, NULL)) AS M4ToM6,
+--       COUNT(DISTINCT IF(monthDiff BETWEEN 7 AND 12, userID, NULL)) AS M7ToM12,
+--       COUNT(DISTINCT IF(monthDiff > 12, userID, NULL)) AS M12before,
+--     FROM LeadMonth
+--     WHERE firstMonth >= "2022-01-01"
+--       AND monthDiff > 0
+--     GROUP BY month
+--   )
+--   ,MAUList AS (
+--     SELECT DISTINCT
+--       DATE_TRUNC(timezoneDate, MONTH) AS month,
+--       userID,
+--     FROM `MatomoDataMart.DailyUserBehavior_ViewRegion`
+--     WHERE operationRegionGroup = 'Japan'
+--       AND timezoneDate BETWEEN "2022-01-01" AND "2022-08-31"
+--       AND DATE_TRUNC(registerDate, MONTH) < DATE_TRUNC(timezoneDate, MONTH)
+--   )
+--   ,ExistingNonTopMAU AS (
+--     SELECT
+--       T1.month,
+--       COUNT(DISTINCT T1.userID) AS MAU,
+--       COUNT(DISTINCT IF(T2.firstMonth IS NULL OR T2.firstMonth >= T1.month, T1.userID, NULL)) AS existingMAU
+--     FROM MAUList AS T1
+--     LEFT JOIN LeadMonth AS T2
+--       USING(userID)
+--     GROUP BY month
+--   )
+-- SELECT
+--   T1.*,
+--   T2.existingUsersToTopSpenders/T1.existingMAU AS conversionRate,
+--   T2.* EXCEPT(month)
+-- FROM ExistingNonTopMAU AS T1
+-- LEFT JOIN LeadMonthSummary AS T2
+--   USING(month)
+-- ORDER BY month
 
 -- Existing sVIP renewal interval
 -- WITH
