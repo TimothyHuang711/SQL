@@ -1,0 +1,316 @@
+-- Base Table: daily spending including gift, bet and win points in games
+WITH
+  JPSpenders AS (
+    SELECT DISTINCT
+      user_id AS userID
+    FROM
+      `media17-1119.MatomoCore.fact_usage` AS PUI
+    WHERE
+      DATE(timestamp_utc, IFNULL(receiver_inferStreamerTimezone, 'Asia/Taipei')) BETWEEN
+        "2022-08-01" AND "2022-08-31"
+      AND giftID NOT IN (
+        'expiredPaidGiftID',
+        'expiredFreeGiftID',
+        'system_recycle',
+        'system_cancel_order',
+        'system_no_reason_recycle',
+        'fruit_farm_gpool_lose_points',
+        'fruit_farm_user_bet_points'
+      )
+      AND user_id NOT IN ('016a2c96-1d1d-4530-97d7-fb3e9866bc7e', 'bb4582dc-3657-4360-9fe8-64809509a2ff')
+      AND listPurchaseIncome > 0
+      AND receiver_inferStreamerRegionGroup = "Japan"
+  )
+  ,Gift AS (
+    SELECT
+      DATE(timestamp_utc, IFNULL(receiver_inferStreamerTimezone, 'Asia/Taipei')) AS tzDate,
+      user_id AS userID,
+      SUM(listPurchaseIncome) as spentRevenue_gift,
+      SUM(send_point) AS spentPoints_gift
+    FROM `media17-1119.MatomoCore.fact_usage` AS PUI
+    WHERE
+      DATE(timestamp_utc, IFNULL(receiver_inferStreamerTimezone, 'Asia/Taipei')) BETWEEN
+        "2022-08-01" AND "2022-09-25"
+      AND giftID NOT IN (
+        'expiredPaidGiftID',
+        'expiredFreeGiftID',
+        'system_recycle',
+        'system_cancel_order',
+        'system_no_reason_recycle',
+        'fruit_farm_gpool_lose_points',
+        'fruit_farm_user_bet_points'
+      )
+      AND user_id IN (SELECT userID FROM JPSpenders)
+      AND listPurchaseIncome > 0
+      AND receiver_inferStreamerRegionGroup = "Japan"
+    GROUP BY tzDate, userID
+  )
+  ,Bet AS (
+    SELECT
+      DATE(timestamp_utc, IFNULL(receiver_inferStreamerTimezone, 'Asia/Taipei')) AS tzDate,
+      user_id AS userID,
+      SUM(listPurchaseIncome) as spentRevenue_fruitFarm,
+      SUM(send_point) AS spentPoints_fruitFarm,
+      COUNT(DISTINCT usageId) AS betCounts
+    FROM `media17-1119.MatomoCore.fact_usage` AS PUI
+    WHERE
+      DATE(timestamp_utc, IFNULL(receiver_inferStreamerTimezone, 'Asia/Taipei')) BETWEEN
+        "2022-08-01" AND "2022-09-25"
+      AND giftID = 'fruit_farm_user_bet_points'
+      AND user_id IN (SELECT userID FROM JPSpenders)
+      AND listPurchaseIncome > 0
+      AND receiver_inferStreamerRegionGroup = "Japan"
+    GROUP BY tzDate, userID
+  )
+  ,Win AS (
+    SELECT
+      DATE(timestamp_utc, IFNULL(timezone, 'Asia/Taipei')) AS tzDate,
+      receive_user_id AS userID,
+      SUM(listPurchaseIncome) as winRevenue,
+      SUM(receive_point) AS winPoints,
+    FROM
+      `media17-1119.MatomoCore.fact_usage` AS PUI
+    WHERE
+      DATE(timestamp_utc, IFNULL(timezone, 'Asia/Taipei')) BETWEEN
+        "2022-08-01" AND "2022-09-25"
+      AND giftID ='fruit_farm_gpool_lose_points'
+      AND user_id = "bb4582dc-3657-4360-9fe8-64809509a2ff"
+      AND receive_user_id IN (SELECT userID FROM JPSpenders)
+    GROUP BY
+      tzDate,
+      userID
+  )
+  ,SpendSummary AS (
+    SELECT
+      G.tzDate,
+      G.userID,
+      G.spentRevenue_gift,
+      G.spentPoints_gift,
+      IFNULL(B.spentRevenue_fruitFarm, 0) AS spentRevenue_fruitFarm,
+      IFNULL(B.spentPoints_fruitFarm, 0) AS spentPoints_fruitFarm,
+      IFNULL(B.betCounts, 0) AS betCounts,
+      IFNULL(W.winRevenue, 0) AS winRevenue,
+      IFNULL(W.winPoints, 0) AS winPoints,
+      B.spentRevenue_fruitFarm - IFNULL(W.winRevenue, 0) AS loseRevenue,
+      B.spentPoints_fruitFarm - IFNULL(W.winPoints, 0) AS losePoints,
+    FROM Gift AS G
+    LEFT JOIN Bet AS B
+      USING(tzDate, userID)
+    LEFT JOIN Win AS W
+      USING(tzDate, userID)
+  ),
+  MonthlyInfo AS (
+    SELECT
+      DATE_TRUNC(tzDate, MONTH) AS tzMonth,
+      userID,
+      SUM(spentRevenue_gift) AS spentRevenue_gift,
+      SUM(spentPoints_gift) AS spentPoints_gift,
+      SUM(spentRevenue_fruitFarm) AS spentRevenue_fruitFarm,
+      COUNTIF(betCounts IS NOT NULL) AS playDays,
+      SUM(betCounts) AS betCounts,
+      SUM(losePoints) AS losePoints
+    FROM SpendSummary
+    GROUP BY tzMonth, userID
+  )
+  ,SpenderLabel AS (
+    SELECT
+      userID,
+      CASE
+        WHEN spentRevenue_gift >= 1000 THEN "Top"
+        WHEN spentRevenue_gift > 0 AND spentRevenue_gift < 1000 THEN "Regular"
+        WHEN spentRevenue_gift = 0 AND spentPoints_gift > 0 THEN "Free Spender"
+        ELSE "Others"
+      END AS spenderType,
+    FROM MonthlyInfo
+    WHERE tzMonth = "2022-08-01"
+  )
+  ,PlayerLabel AS (
+    SELECT
+      userID,
+      IF(betCounts > 0, "Play", "Not Play") AS playOrNot,
+      IF(losePoints > 0, "Loser", "Winner") AS PlayerType
+    FROM MonthlyInfo
+    WHERE tzMonth = "2022-09-01"
+  )
+  ,ActiveUsers AS (
+    SELECT
+      userID
+    FROM `MatomoDataMart.DailyUserBehavior_ViewRegion`
+    WHERE timezoneDate BETWEEN "2022-09-01" AND "2022-09-25"
+      AND operationRegionGroup = "Japan"
+    GROUP BY userID
+    HAVING COUNT(timezoneDate) > 25/2
+  )
+  ,SpenderLabelSept AS (
+    SELECT
+      userID,
+      CASE
+        WHEN spentRevenue_gift >= 500 THEN "Top"
+        WHEN spentRevenue_gift > 0 AND spentRevenue_gift < 500 THEN "Regular"
+        WHEN spentRevenue_gift = 0 AND spentPoints_gift > 0 THEN "Free Spender"
+        ELSE "Others"
+      END AS spenderType_Sept,
+    FROM MonthlyInfo
+    WHERE tzMonth = "2022-09-01"
+  )
+  ,SpendWithMonthlyInfo AS (
+    SELECT
+      S.*,
+      SL.* EXCEPT(userID),
+      PL.* EXCEPT(userID),
+      IF(S.userID IN (SELECT userID FROM ActiveUsers), "Active", "Not Active") AS activeOrNot,
+      SLS.spenderType_Sept
+    FROM SpendSummary AS S
+    LEFT JOIN SpenderLabel AS SL
+      ON S.userID = SL.userID
+    LEFT JOIN PlayerLabel AS PL
+      ON S.userID = PL.userID
+    LEFT JOIN SpenderLabelSept AS SLS
+      ON S.userID = SLS.userID
+  )
+SELECT *
+FROM SpendWithMonthlyInfo
+ORDER BY tzDate, userID
+
+-- Analysis part: need to change source table to the one created by the SQL codes above
+-- Spent points and lose points by SpenderType & PlayOrNot
+WITH
+  Gamers AS (
+    SELECT DISTINCT
+      userID,
+      IF(loseRevenue >=
+            PERCENTILE_CONT(loseRevenue, 0.9) OVER (PARTITION BY spenderType),
+        "Heavy",
+        "Light"
+      ) AS GamerType
+    FROM (
+      SELECT
+        userID,
+        spenderType,
+        SUM(loseRevenue) AS loseRevenue
+      FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anon68a12578a90e84051fa4d593ba84cb64c86a7a174ea6377fa23ba04426606a92` 
+      WHERE playOrNot = "Play"
+        AND tzDate >= "2022-09-01"
+        AND activeOrNot = "Active"
+      GROUP BY userID, spenderType
+    )
+  )
+SELECT 
+  tzDate,
+  spenderType, 
+  CASE
+    WHEN playOrNot = "Not Play" THEN "2_Not Play"
+    WHEN playOrNot IS NULL THEN "1_Churned"
+    WHEN playOrNot = "Play" AND GamerType = "Heavy" THEN "4_Heavy Player"
+    WHEN playOrNot = "Play" AND GamerType = "Light" THEN "3_Light Player"
+  END AS playOrNot,
+  SUM(spentPoints_gift) AS points_gift,
+  SUM(losePoints) AS losePoints
+FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anon68a12578a90e84051fa4d593ba84cb64c86a7a174ea6377fa23ba04426606a92` 
+LEFT JOIN Gamers
+  USING(userID)
+WHERE activeOrNot = "Active"
+GROUP BY tzDate, spenderType, playOrNot
+ORDER BY tzDate
+
+-- Numbers by SpenderType & PlayOrNot
+WITH
+  Gamers AS (
+    SELECT DISTINCT
+      userID,
+      IF(betCounts >=
+            PERCENTILE_CONT(betCounts, 0.9) OVER (PARTITION BY spenderType),
+        "Heavy",
+        "Light"
+      ) AS GamerType
+    FROM (
+      SELECT
+        userID,
+        spenderType,
+        SUM(betCounts) AS betCounts
+      FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anon68a12578a90e84051fa4d593ba84cb64c86a7a174ea6377fa23ba04426606a92` 
+      WHERE playOrNot = "Play"
+        AND tzDate >= "2022-09-01"
+        AND activeOrNot = "Active"
+      GROUP BY userID, spenderType
+    )
+  )
+SELECT 
+  spenderType, 
+  CASE
+   WHEN playOrNot = "Not Play" THEN "2_Not Play"
+    WHEN playOrNot IS NULL THEN "1_Churned"
+    WHEN playOrNot = "Play" AND GamerType = "Heavy" THEN "4_Heavy Player"
+    WHEN playOrNot = "Play" AND GamerType = "Light" THEN "3_Light Player"
+  END AS playOrNot,
+  COUNT(DISTINCT userID) AS counts
+FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anon68a12578a90e84051fa4d593ba84cb64c86a7a174ea6377fa23ba04426606a92`
+LEFT JOIN Gamers
+  USING(userID)
+WHERE activeOrNot = "Active"
+GROUP BY spenderType, playOrNot
+ORDER BY spenderType, playOrNot
+
+-- Describe top spenders playing games
+-- SELECT DISTINCT
+--   AVG(spentRevenue_fruitFarm) OVER () AS spentRevenue_fruitFarm_avg,
+--   PERCENTILE_CONT(spentRevenue_fruitFarm, 0.1) OVER () AS spentRevenue_fruitFarm_P10,
+--   PERCENTILE_CONT(spentRevenue_fruitFarm, 0.25) OVER () AS spentRevenue_fruitFarm_P25,
+--   PERCENTILE_CONT(spentRevenue_fruitFarm, 0.5) OVER () AS spentRevenue_fruitFarm_P50,
+--   PERCENTILE_CONT(spentRevenue_fruitFarm, 0.75) OVER () AS spentRevenue_fruitFarm_P75,
+--   PERCENTILE_CONT(spentRevenue_fruitFarm, 0.9) OVER () AS spentRevenue_fruitFarm_P90,
+--   AVG(loseRevenue) OVER () AS loseRevenue_avg,
+--   PERCENTILE_CONT(loseRevenue, 0.1) OVER () AS loseRevenue_P10,
+--   PERCENTILE_CONT(loseRevenue, 0.25) OVER () AS loseRevenue_P25,
+--   PERCENTILE_CONT(loseRevenue, 0.5) OVER () AS loseRevenue_P50,
+--   PERCENTILE_CONT(loseRevenue, 0.75) OVER () AS loseRevenue_P75,
+--   PERCENTILE_CONT(loseRevenue, 0.9) OVER () AS loseRevenue_P90,
+--   AVG(betCounts) OVER () AS betCounts_avg,
+--   PERCENTILE_CONT(betCounts, 0.1) OVER () AS betCounts_P10,
+--   PERCENTILE_CONT(betCounts, 0.25) OVER () AS betCounts_P25,
+--   PERCENTILE_CONT(betCounts, 0.5) OVER () AS betCounts_P50,
+--   PERCENTILE_CONT(betCounts, 0.75) OVER () AS betCounts_P75,
+--   PERCENTILE_CONT(betCounts, 0.9) OVER () AS betCounts_P90
+-- FROM (
+--   SELECT
+--     userID,
+--     SUM(spentRevenue_fruitFarm) AS spentRevenue_fruitFarm,
+--     SUM(loseRevenue) AS loseRevenue,
+--     SUM(betCounts) AS betCounts,
+--     COUNT(DISTINCT tzDate) AS playDays
+--   FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anondbdf2bc08426a4880d9d482308a705b3996c5bb18da76bd643676945f7ff6317`
+--   WHERE spenderType = "Top" 
+--     AND playOrNot = "Play"
+--     AND tzDate >= "2022-09-01"
+--   GROUP BY userID
+-- )
+
+-- Spent points and lose points by SpenderType & PlayOrNot & playerType
+-- SELECT 
+--   tzDate,
+--   spenderType, 
+--   CASE
+--     WHEN playOrNot = "No Play" THEN "2_Not Play"
+--     WHEN playOrNot IS NULL THEN "1_Churned"
+--     WHEN playOrNot = "Play" AND playerType = "Winner" THEN "3_Winner"
+--     WHEN playOrNot = "Play" AND playerType = "Loser" THEN "4_Loser"
+--   END AS playOrNot,
+--   SUM(spentPoints_gift) AS points_gift,
+--   SUM(losePoints) AS losePoints
+-- FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anondbdf2bc08426a4880d9d482308a705b3996c5bb18da76bd643676945f7ff6317` 
+-- GROUP BY tzDate, spenderType, playOrNot
+-- ORDER BY tzDate
+
+-- Users by SpenderType & PlayOrNot & playerType
+-- SELECT 
+--   spenderType, 
+--   CASE
+--     WHEN playOrNot = "No Play" THEN "2_Not Play"
+--     WHEN playOrNot IS NULL THEN "1_Churned"
+--     WHEN playOrNot = "Play" AND playerType = "Winner" THEN "3_Winner"
+--     WHEN playOrNot = "Play" AND playerType = "Loser" THEN "4_Loser"
+--   END AS playOrNot,
+--   COUNT(DISTINCT userID) AS counts
+-- FROM `media17-1119._374bc5e6017502f5af3c4e6591073d948b077048.anondbdf2bc08426a4880d9d482308a705b3996c5bb18da76bd643676945f7ff6317`
+-- GROUP BY spenderType, playOrNot
+-- ORDER BY spenderType, playOrNot
